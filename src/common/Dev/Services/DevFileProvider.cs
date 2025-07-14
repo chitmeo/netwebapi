@@ -1,0 +1,335 @@
+﻿using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Text;
+
+namespace Dev.Services;
+
+internal class DevFileProvider : PhysicalFileProvider, IDevFileProvider
+{
+    #region Ctor
+    public DevFileProvider(IWebHostEnvironment webHostEnvironment)
+        : base(File.Exists(webHostEnvironment.ContentRootPath) ? Path.GetDirectoryName(webHostEnvironment.ContentRootPath)! : webHostEnvironment.ContentRootPath)
+    {
+
+        WebRootPath = File.Exists(webHostEnvironment.WebRootPath)
+            ? Path.GetDirectoryName(webHostEnvironment.WebRootPath)
+            : webHostEnvironment.WebRootPath;
+    }
+
+    #endregion
+
+    #region Utilities
+
+    protected virtual void DeleteDirectoryRecursive(string path)
+    {
+        Directory.Delete(path, true);
+        const int maxIterationToWait = 10;
+        var curIteration = 0;
+
+        while (Directory.Exists(path))
+        {
+            curIteration += 1;
+
+            if (curIteration > maxIterationToWait)
+                return;
+
+            Thread.Sleep(100);
+        }
+    }
+
+    protected static bool IsUncPath(string path)
+    {
+        return Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsUnc;
+    }
+
+    #endregion
+
+    #region Methods
+
+    public virtual string Combine(params string[] paths)
+    {
+        var path = Path.Combine(paths.SelectMany(p => IsUncPath(p) ? [p] : p.Split('\\', '/')).ToArray());
+
+        if (Environment.OSVersion.Platform == PlatformID.Unix && !IsUncPath(path))
+            path = "/" + path;
+
+        return path;
+    }
+
+    public virtual void CreateDirectory(string path)
+    {
+        if (!DirectoryExists(path))
+            Directory.CreateDirectory(path);
+    }
+
+    public virtual void CreateFile(string path)
+    {
+        if (FileExists(path))
+            return;
+
+        var fileInfo = new FileInfo(path);
+        if (fileInfo.DirectoryName != null)
+        {
+            CreateDirectory(fileInfo.DirectoryName);
+        }
+
+        using (File.Create(path))
+        {
+        }
+    }
+
+    public virtual void DeleteDirectory(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+
+        foreach (var directory in Directory.GetDirectories(path))
+        {
+            DeleteDirectory(directory);
+        }
+
+        try
+        {
+            DeleteDirectoryRecursive(path);
+        }
+        catch (IOException)
+        {
+            DeleteDirectoryRecursive(path);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            DeleteDirectoryRecursive(path);
+        }
+    }
+
+    public virtual void DeleteFile(string filePath)
+    {
+        if (!FileExists(filePath))
+            return;
+
+        File.Delete(filePath);
+    }
+
+    public virtual bool DirectoryExists(string path)
+    {
+        return Directory.Exists(path);
+    }
+
+    public virtual void DirectoryMove(string sourceDirName, string destDirName)
+    {
+        Directory.Move(sourceDirName, destDirName);
+    }
+
+    public virtual IEnumerable<string> EnumerateFiles(string directoryPath, string searchPattern,
+        bool topDirectoryOnly = true)
+    {
+        return Directory.EnumerateFiles(directoryPath, searchPattern,
+            topDirectoryOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories);
+    }
+
+    public virtual void FileCopy(string sourceFileName, string destFileName, bool overwrite = false)
+    {
+        File.Copy(sourceFileName, destFileName, overwrite);
+    }
+
+    public virtual bool FileExists(string filePath)
+    {
+        return File.Exists(filePath);
+    }
+
+    public virtual long FileLength(string path)
+    {
+        if (!FileExists(path))
+            return -1;
+
+        return new FileInfo(path).Length;
+    }
+
+    public virtual void FileMove(string sourceFileName, string destFileName)
+    {
+        File.Move(sourceFileName, destFileName);
+    }
+
+    public virtual string GetAbsolutePath(params string[] paths)
+    {
+        var allPaths = new List<string>();
+
+        if (paths.Any() && !paths[0].Contains(WebRootPath, StringComparison.InvariantCulture))
+            allPaths.Add(WebRootPath);
+
+        allPaths.AddRange(paths);
+
+        return Combine(allPaths.ToArray());
+    }
+
+    [SupportedOSPlatform("windows")]
+    public virtual DirectorySecurity GetAccessControl(string path)
+    {
+        return new DirectoryInfo(path).GetAccessControl();
+    }
+
+    public virtual DateTime GetCreationTime(string path)
+    {
+        return File.GetCreationTime(path);
+    }
+
+    public virtual string[] GetDirectories(string path, string searchPattern = "", bool topDirectoryOnly = true)
+    {
+        if (string.IsNullOrEmpty(searchPattern))
+            searchPattern = "*";
+
+        return Directory.GetDirectories(path, searchPattern,
+            topDirectoryOnly ? SearchOption.TopDirectoryOnly : SearchOption.AllDirectories);
+    }
+
+    public virtual string GetDirectoryName(string path)
+    {
+        return Path.GetDirectoryName(path) ?? string.Empty;
+    }
+
+    public virtual string GetDirectoryNameOnly(string path)
+    {
+        return new DirectoryInfo(path).Name;
+    }
+
+    public virtual string GetFileExtension(string filePath)
+    {
+        return Path.GetExtension(filePath);
+    }
+
+    public virtual string GetFileName(string path)
+    {
+        return Path.GetFileName(path);
+    }
+
+    public virtual string GetFileNameWithoutExtension(string filePath)
+    {
+        return Path.GetFileNameWithoutExtension(filePath);
+    }
+
+    public virtual string[] GetFiles(string directoryPath, string searchPattern = "", bool topDirectoryOnly = true)
+    {
+        if (string.IsNullOrEmpty(searchPattern))
+            searchPattern = "*.*";
+
+        return Directory.GetFileSystemEntries(directoryPath, searchPattern,
+            new EnumerationOptions
+            {
+                IgnoreInaccessible = true,
+                MatchCasing = MatchCasing.CaseInsensitive,
+                RecurseSubdirectories = !topDirectoryOnly,
+
+            });
+    }
+
+    public virtual DateTime GetLastAccessTime(string path)
+    {
+        return File.GetLastAccessTime(path);
+    }
+
+    public virtual DateTime GetLastWriteTime(string path)
+    {
+        return File.GetLastWriteTime(path);
+    }
+
+    public virtual DateTime GetLastWriteTimeUtc(string path)
+    {
+        return File.GetLastWriteTimeUtc(path);
+    }
+
+    public FileStream GetOrCreateFile(string path)
+    {
+        if (FileExists(path))
+            return File.Open(path, FileMode.Open, FileAccess.ReadWrite);
+
+        var fileInfo = new FileInfo(path);
+        CreateDirectory(fileInfo.DirectoryName);
+
+        return File.Create(path);
+    }
+
+    public virtual string GetParentDirectory(string directoryPath)
+    {
+        return Directory.GetParent(directoryPath)?.FullName ?? string.Empty;
+    }
+
+    public virtual string GetVirtualPath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return path;
+
+        if (!IsDirectory(path) && FileExists(path))
+            path = new FileInfo(path).DirectoryName ?? string.Empty;
+
+        path = path.Replace(WebRootPath, string.Empty).Replace('\\', '/').Trim('/').TrimStart('~', '/');
+
+        return $"~/{path}";
+    }
+
+    public virtual bool IsDirectory(string path)
+    {
+        return DirectoryExists(path);
+    }
+
+    public virtual string MapPath(string path)
+    {
+        path = path.Replace("~/", string.Empty).TrimStart('/');
+
+        var pathEnd = path.EndsWith('/') ? Path.DirectorySeparatorChar.ToString() : string.Empty;
+
+        return Combine(Root ?? string.Empty, path) + pathEnd;
+    }
+
+    public virtual async Task<byte[]> ReadAllBytesAsync(string filePath)
+    {
+        return File.Exists(filePath) ? await File.ReadAllBytesAsync(filePath) : Array.Empty<byte>();
+    }
+
+    public virtual async Task<string> ReadAllTextAsync(string path, Encoding encoding)
+    {
+        await using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var streamReader = new StreamReader(fileStream, encoding);
+
+        return await streamReader.ReadToEndAsync();
+    }
+
+    public virtual string ReadAllText(string path, Encoding encoding)
+    {
+        using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var streamReader = new StreamReader(fileStream, encoding);
+
+        return streamReader.ReadToEnd();
+    }
+
+    public virtual async Task WriteAllBytesAsync(string filePath, byte[] bytes)
+    {
+        await File.WriteAllBytesAsync(filePath, bytes);
+    }
+
+    public virtual async Task WriteAllTextAsync(string path, string contents, Encoding encoding)
+    {
+        await File.WriteAllTextAsync(path, contents, encoding);
+    }
+
+    public virtual void WriteAllText(string path, string contents, Encoding encoding)
+    {
+        File.WriteAllText(path, contents, encoding);
+    }
+
+    public new virtual IFileInfo GetFileInfo(string subpath)
+    {
+        subpath = subpath.Replace(Root, string.Empty);
+
+        return base.GetFileInfo(subpath);
+    }
+
+    #endregion
+
+    #region Properties
+
+    public string WebRootPath { get; }
+
+    #endregion
+}
